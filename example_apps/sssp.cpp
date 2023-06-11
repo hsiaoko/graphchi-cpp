@@ -34,6 +34,8 @@
 using namespace graphchi;
 
 const unsigned INF = UINT32_MAX;
+int         iterationcount = 0;
+bool        scheduler = false;
 
 /**
  * Type definitions. Remember to create suitable graph shards using the
@@ -45,8 +47,9 @@ typedef uint EdgeDataType;
 /**
  * SSSP
  */
-struct SspProgram : public GraphChiProgram<VertexDataType, EdgeDataType>
+struct SSSPProgram : public GraphChiProgram<VertexDataType, EdgeDataType>
 {
+    bool converged;
 
     /**
      *  Vertex update function.
@@ -59,45 +62,23 @@ struct SspProgram : public GraphChiProgram<VertexDataType, EdgeDataType>
             /* On first iteration, initialize vertex (and its edges). This is usually required, because
                on each run, GraphChi will modify the data files. To start from scratch, it is easiest
                do initialize the program in code. Alternatively, you can keep a copy of initial data files. */
-            if (vertex.id() == 0)
-            {
+            if (vertex.id() == 0) {
                 vertex.set_data(1);
-                for (int i = 0; i < vertex.num_outedges(); i++)
-                {
-                    graphchi_edge<uint> *edge = vertex.outedge(i);
-                    edge->set_data(1);
-                }
+                if (scheduler)  gcontext.scheduler->add_task(vertex.id());
+                converged = false;
+            } else {
+                vertex.set_data(UINT32_MAX);
             }
         }
-        else
-        {
-            /* Do computation */
-            /* Loop over in-edges (example) */
-            for (int i = 0; i < vertex.num_inedges(); i++)
+        else {
+            for (int i = 0; i < vertex.num_edges(); i++)
             {
-                // Do something
-                //    value += vertex.inedge(i).get_data();
-                graphchi_edge<uint> *edge = vertex.inedge(i);
-                if (edge->get_data() != 0)
-                {
-                    vertex.set_data(1);
+                if(vertex.get_data() + 1 < vertex.edge(i)->get_data()){
+                    vertex.edge(i)->set_data(vertex.get_data());
+                    if (scheduler) gcontext.scheduler->add_task(vertex.edge(i)->vertex_id(), true);
+                    converged = false;
                 }
             }
-
-            /* Loop over out-edges (example) */
-            for (int i = 0; i < vertex.num_outedges(); i++)
-            {
-                // Do something
-                // vertex.outedge(i).set_data(x)
-                vertex.outedge(i)->set_data(1);
-            }
-
-            /* Loop over all edges (ignore direction) */
-            // for(int i=0; i < vertex.num_edges(); i++) {
-            //     // vertex.edge(i).get_data()
-            // }
-
-            // v.set_data(new_value);
         }
     }
 
@@ -106,13 +87,19 @@ struct SspProgram : public GraphChiProgram<VertexDataType, EdgeDataType>
      */
     void before_iteration(int iteration, graphchi_context &gcontext)
     {
+        iterationcount++;
+        converged = iteration > 0;
     }
 
     /**
      * Called after an iteration has finished.
      */
-    void after_iteration(int iteration, graphchi_context &gcontext)
+    void after_iteration(int iteration, graphchi_context &ginfo)
     {
+        if (converged) {
+            std::cout << "Converged!" << std::endl;
+            ginfo.set_last_iteration(iteration);
+        }
     }
 
     /**
@@ -135,23 +122,22 @@ int main(int argc, const char **argv)
     /* GraphChi initialization will read the command line
        arguments and the configuration file. */
     graphchi_init(argc, argv);
-    printf("INF number: %llu size: %d", INF, sizeof(INF));
     /* Metrics object for keeping track of performance counters
        and other information. Currently required. */
-    metrics m("ssp");
+    metrics m("sssp");
     global_logger().set_log_level(LOG_DEBUG);
 
     /* Basic arguments for application */
     std::string filename = get_option_string("file"); // Base filename
-    int niters = get_option_int("niters", 20);         // Number of iterations
-    bool scheduler = get_option_int("scheduler", 0);  // Whether to use selective scheduling
+    int niters = get_option_int("niters", 1000);         // Number of iterations
+    bool scheduler = get_option_int("scheduler", false);  // Whether to use selective scheduling
 
     /* Detect the number of shards or preprocess an input to create them */
     int nshards = convert_if_notexists<EdgeDataType>(filename,
                                                      get_option_string("nshards", "auto"));
 
     /* Run */
-    SspProgram program;
+    SSSPProgram program;
     graphchi_engine<VertexDataType, EdgeDataType> engine(filename, nshards, scheduler, m);
     engine.run(program, niters);
 
